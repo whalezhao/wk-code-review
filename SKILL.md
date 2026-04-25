@@ -848,22 +848,48 @@ fi
 汇总完成后，删除所有中间结果文件，只保留最终报告：
 
 ```bash
-# 删除所有批次的结果 JSON 文件（保留最终报告）
-rm -f {OUTPUT_DIR}/${BRANCH}-result-*.json
+# =============================================
+# Phase 3.5 清理 — 必须全部执行
+# =============================================
+AUDIT_DIR="{OUTPUT_DIR}"
+BRANCH_NAME="${BRANCH}"
 
-# 删除所有 Agent 产生的检查点文件
-rm -f {OUTPUT_DIR}/${BRANCH}-*-checkpoint-*.json
+# 1. 清理 OUTPUT_DIR 内的所有中间文件
+echo "清理 OUTPUT_DIR: ${AUDIT_DIR}"
+rm -f "${AUDIT_DIR}/${BRANCH_NAME}-result-"-*.json
+rm -f "${AUDIT_DIR}/${BRANCH_NAME}-"-*-checkpoint-*.json
+rm -f "${AUDIT_DIR}/${BRANCH_NAME}-status.json"
 
-# 删除所有批次的计划文件
-rm -f {OUTPUT_DIR}/${BRANCH}-plan-*.md
+# 2. 清理主计划文件（与最终报告同目录，需显式删除）
+rm -f "${AUDIT_DIR}/${BRANCH_NAME}-plan.md"
+echo "已删除: ${AUDIT_DIR}/${BRANCH_NAME}-plan.md"
 
-# 删除状态文件
-rm -f {OUTPUT_DIR}/${BRANCH}-status.json
+# 3. 清理 Agent 计划文件（批次级计划）
+rm -f "${AUDIT_DIR}/${BRANCH_NAME}-plan-"*.md
+echo "已删除: ${AUDIT_DIR}/${BRANCH_NAME}-plan-*.md"
+
+# 4. 清理 Agent 运行目录中产生的 references 文件夹（由 Agent 读取规范文件时创建）
+if [ -d "./references" ]; then
+  # 只删除 Agent 审计过程中可能产生的临时文件，保留用户已有的 references 目录
+  # references 目录如果是审计过程中由 Agent 创建的空目录才删除
+  REF_COUNT=$(find ./references -type f 2>/dev/null | wc -l)
+  if [ "$REF_COUNT" -eq 0 ]; then
+    rmdir ./references 2>/dev/null && echo "已删除空目录: ./references" || true
+  fi
+fi
+
+echo "清理完成"
 ```
+
+**⚠️ 本次新增修复**：
+- 原 Phase 3.5 仅清理 `{OUTPUT_DIR}` 内文件，漏掉了**主计划文件**（`{branch}-plan.md`）和**Agent运行目录中产生的 `references/` 空目录**
+- 主计划文件会与最终报告同目录显式保留导致混淆，必须删除
+- `references/` 目录由 Agent 读取规范文件时在运行目录创建，审计完成后应清理
+- 步骤4做了保护判断：仅当 references 目录为空文件数=0时才删除，避免误删用户已有的规范文件
 
 清理后保留的文件：
 ```
-{OUTPUT_DIR}/{branch-name}.md       # 最终审计报告
+{OUTPUT_DIR}/{branch-name}.md       # ✅ 最终审计报告（唯一产物）
 ```
 
 ---
@@ -904,7 +930,7 @@ rm -f {OUTPUT_DIR}/${BRANCH}-status.json
 - [ ] **F维度（宕机恢复与逻辑接续）审计已完成**，特别是Listener/导出服务等关键文件的故障模式分析
 - [ ] 摘要已输出到对话中
 - [ ] 审计结论已判定并输出（含加权WARNING分数计算过程）
-- [ ] 中间文件已清理（仅保留主计划+最终报告）
+- [ ] 中间文件已清理（Phase 3.5 清理步骤已执行，仅保留最终报告 `{branch-name}.md`）
 
 ---
 
