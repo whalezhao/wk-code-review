@@ -515,9 +515,32 @@ for p in all_issues:
 
 print(f"去重后: {len(deduped)} 个")
 
+# 统计涉及文件清单（按问题数降序，全部列出，不得截断）
+from collections import Counter
+SEV_ORDER = {"CRITICAL": 0, "WARNING": 1, "SUGGESTION": 2}
+file_stats = {}
+for p in deduped:
+    f = p["文件"]
+    if f not in file_stats:
+        file_stats[f] = {"count": 0, "severities": []}
+    file_stats[f]["count"] += 1
+    file_stats[f]["severities"].append(p.get("严重程度", "WARNING"))
+
+# 计算每个文件的最高严重程度
+file_list = []
+for f, stats in file_stats.items():
+    # 取最高严重程度
+    min_sev = min(stats["severities"], key=lambda s: SEV_ORDER.get(s, 1))
+    file_list.append((f, stats["count"], min_sev))
+
+# 按问题数降序
+file_list.sort(key=lambda x: (-x[1], SEV_ORDER.get(x[2], 1)))
+all_files_sorted = file_list
+
+print(f"涉及文件: {len(all_files_sorted)} 个")
+
 # 排序
 DIM_ORDER = {"G": 0, "F": 1, "E": 2, "B": 3, "A": 4, "C": 5, "D": 6}
-SEV_ORDER = {"CRITICAL": 0, "WARNING": 1, "SUGGESTION": 2}
 deduped.sort(key=lambda p: (
     next((v for k, v in DIM_ORDER.items() if k in p.get("维度", "")), 7),
     SEV_ORDER.get(p.get("严重程度", "WARNING"), 1),
@@ -529,8 +552,12 @@ for i, p in enumerate(deduped, 1):
     p["id"] = f"ISS-{i:03d}"
 
 # 保存
+result_all = {
+    "问题列表": deduped,
+    "文件清单": [{"文件": f, "问题数": c, "最高严重程度": s} for f, c, s in all_files_sorted]
+}
 with open(f"{BRANCH}-result-all.json", 'w', encoding='utf-8') as fp:
-    json.dump(deduped, fp, ensure_ascii=False, indent=2)
+    json.dump(result_all, fp, ensure_ascii=False, indent=2)
 
 print(f"保存到: {BRANCH}-result-all.json")
 
@@ -577,11 +604,26 @@ PYTHON_EOF
 | F. 宕机恢复与逻辑接续 | {n} | {n} | {n} | ×2.5 |
 | G. 安全审计 | {n} | {n} | {n} | ×3 |
 
-**涉及文件清单**（出现问题的文件，去重）：
+**涉及文件清单**（出现问题的所有文件，去重，按问题数降序）：
 
+> ⚠️ **强制要求**：此表格必须从 `{BRANCH}-result-all.json` 的 `文件清单` 字段读取并填充真实数据，不得遗漏，不得使用占位符。所有出现问题的文件都必须列出，不能截断。
+
+生成步骤：
+1. 读取 `{OUTPUT_DIR}/{BRANCH}-result-all.json`
+2. 找到顶层字段 `文件清单`（数组类型），包含所有出现问题文件的完整列表
+3. 按以下格式生成表格，每行对应数组中的一个元素：
+   - 第一列：文件路径（使用反引号包裹，便于复制）
+   - 第二列：问题数
+   - 第三列：该文件所有问题中的最高严重程度
+
+示例（真实数据）：
 | 文件 | 问题数 | 最高严重程度 |
 |---|---|---|
-| {文件路径} | {n} | {CRITICAL/WARNING/SUGGESTION} |
+| `cn/cisdigital/datakits/di/task/biz/service/TaskServiceImpl.java` | 5 | WARNING |
+| `cn/cisdigital/datakits/di/task/biz/repository/mapper/TaskMapper.xml` | 3 | CRITICAL |
+| ... | ... | ... |
+
+若 `文件清单` 字段为空，报告生成失败，必须修复 Phase 3.2 的 Python 脚本。
 
 ---
 
@@ -918,7 +960,33 @@ PYTHON_EOF
 **本次审计综合评价**：
 {简要说明本次变更的整体质量，突出最需要关注的问题。}
 
-### 3.4 审计结论判定标准
+### 3.4 报告完整性校验（强制）
+
+> ⚠️ **报告生成后必须执行此校验**，确保 `.md` 报告包含 `result-all.json` 中的全部问题，不得遗漏。
+
+校验步骤：
+
+1. **问题数校验**：统计 `.md` 报告中出现的 `ISS-` 编号数量，与 `result-all.json` 的 `问题列表` 数组长度对比，两者必须相等
+   ```bash
+   # 统计 .md 报告中的 ISS 编号数量
+   REPORT_COUNT=$(grep -c 'ISS-[0-9]\{3\}' "{OUTPUT_DIR}/{BRANCH}.md")
+   # 统计 JSON 中的问题数量
+   JSON_COUNT=$(python3 -c "import json; print(len(json.load(open('{OUTPUT_DIR}/{BRANCH}-result-all.json')).get('问题列表', [])))")
+   echo "报告问题数: ${REPORT_COUNT}, JSON问题数: ${JSON_COUNT}"
+   if [ "${REPORT_COUNT}" -ne "${JSON_COUNT}" ]; then
+     echo "⚠️ 警告: 报告(${REPORT_COUNT})与JSON(${JSON_COUNT})问题数不一致，存在遗漏！"
+   fi
+   ```
+
+2. **文件清单校验**：`.md` 报告中"涉及文件清单"的行数，与 `result-all.json` 的 `文件清单` 数组长度对比，两者必须相等
+
+3. **维度覆盖校验**：确认 `.md` 报告中 3.3.2~3.3.8 七个维度章节都存在（即使无问题也要有"✅ 未发现"的声明）
+
+4. **ID连续性校验**：确认 `.md` 报告中所有 `ISS-` 编号从 `ISS-001` 开始连续无断号
+
+若校验不通过，必须补充报告中遗漏的问题，直到全部通过。
+
+### 3.5 审计结论判定标准
 
 根据问题**严重程度 × 维度**交叉判定，而非简单计数：
 
@@ -966,10 +1034,10 @@ PYTHON_EOF
 AUDIT_DIR="{OUTPUT_DIR}"
 BRANCH_NAME="${BRANCH}"
 
-# 1. 清理 OUTPUT_DIR 内的所有中间文件
+# 1. 清理 OUTPUT_DIR 内的批次结果文件（保留 result-all.json）
 echo "清理 OUTPUT_DIR: ${AUDIT_DIR}"
-rm -f "${AUDIT_DIR}/${BRANCH_NAME}-result-"-*.json
-rm -f "${AUDIT_DIR}/${BRANCH_NAME}-"-*-checkpoint-*.json
+rm -f "${AUDIT_DIR}/${BRANCH_NAME}-result-"*-merged.json
+rm -f "${AUDIT_DIR}/${BRANCH_NAME}-result-"*-checkpoint-*.json
 rm -f "${AUDIT_DIR}/${BRANCH_NAME}-status.json"
 
 # 2. 清理主计划文件（与最终报告同目录，需显式删除）
@@ -982,26 +1050,31 @@ echo "已删除: ${AUDIT_DIR}/${BRANCH_NAME}-plan-*.md"
 
 # 4. 清理 Agent 运行目录中产生的 references 文件夹（由 Agent 读取规范文件时创建）
 if [ -d "./references" ]; then
-  # 只删除 Agent 审计过程中可能产生的临时文件，保留用户已有的 references 目录
-  # references 目录如果是审计过程中由 Agent 创建的空目录才删除
   REF_COUNT=$(find ./references -type f 2>/dev/null | wc -l)
   if [ "$REF_COUNT" -eq 0 ]; then
     rmdir ./references 2>/dev/null && echo "已删除空目录: ./references" || true
   fi
 fi
 
+# 5. 验证 result-all.json 完整性
+TOTAL_IN_JSON=$(python3 -c "import json; d=json.load(open('${AUDIT_DIR}/${BRANCH_NAME}-result-all.json')); print(len(d.get('问题列表', [])))")
+echo "result-all.json 问题数: ${TOTAL_IN_JSON}"
+if [ "${TOTAL_IN_JSON}" -eq "0" ]; then
+  echo "⚠️ 警告: result-all.json 问题列表为空，请检查！"
+fi
+
 echo "清理完成"
 ```
 
-**⚠️ 本次新增修复**：
-- 原 Phase 3.5 仅清理 `{OUTPUT_DIR}` 内文件，漏掉了**主计划文件**（`{branch}-plan.md`）和**Agent运行目录中产生的 `references/` 空目录**
-- 主计划文件会与最终报告同目录显式保留导致混淆，必须删除
-- `references/` 目录由 Agent 读取规范文件时在运行目录创建，审计完成后应清理
-- 步骤4做了保护判断：仅当 references 目录为空文件数=0时才删除，避免误删用户已有的规范文件
+> **⚠️ `result-all.json` 保留说明**：
+> - `{BRANCH}-result-all.json` 是结构化的完整审计数据，包含所有问题（`问题列表`）和文件清单（`文件清单`）
+> - 下游 `review-bug-fix` Skill 可直接读取此文件，无需解析 Markdown 报告
+> - 清理步骤中**只删除批次中间文件**（`*-result-*-merged.json`），**保留 `result-all.json`**
 
 清理后保留的文件：
 ```
-{OUTPUT_DIR}/{branch-name}.md       # ✅ 最终审计报告（唯一产物）
+{OUTPUT_DIR}/{branch-name}.md              # ✅ 最终审计报告
+{OUTPUT_DIR}/{branch-name}-result-all.json # ✅ 结构化审计数据（全部问题 + 文件清单）
 ```
 
 ---
@@ -1038,6 +1111,9 @@ echo "清理完成"
 - [ ] **全局合并前已做字段名标准化**（`file` → `文件`，兜底空值）
 - [ ] **全局去重已完成**（批次间无重复问题）
 - [ ] **全局问题ID已分配**（`ISS-{序号}`，按维度权重从高到低排序）
+- [ ] **涉及文件清单已生成**（从 `{BRANCH}-result-all.json` 的 `文件清单` 字段读取，所有出现问题文件完整列出，表格完整无占位符）
+- [ ] **报告完整性校验已通过**（问题数、文件数、维度覆盖、ID连续性，Phase 3.4）
+- [ ] **`result-all.json` 已保留**（清理步骤未删除此文件，供下游 Skill 使用）
 - [ ] 最终报告已写入 `{OUTPUT_DIR}/<branch-name>.md`
 - [ ] 报告按**维度分章节**（3.3.2~3.3.8），各章节内按文件分组，维度内按 CRITICAL→WARNING→SUGGESTION 排序
 - [ ] 报告各维度表格包含 **ID 列**（大部分6列：ID/行号/子类型/描述/问题代码/修复建议；F维度7列额外含宕机后果）
