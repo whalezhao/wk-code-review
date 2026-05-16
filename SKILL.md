@@ -543,12 +543,6 @@ print(f"SUGGESTION: {sev.get('SUGGESTION', 0)}")
 PYTHON_EOF
 ```
 
-### 3.3 读取结果并生成报告
-
-1. 读取 `{OUTPUT_DIR}/{BRANCH}-result-all.json`
-2. 按维度分组问题
-3. 生成 Markdown 报告
-
 ### 3.3 生成最终报告
 
 > **⚠️ 前置步骤**：必须先执行 Phase 3.2 的 Python 脚本生成 `{OUTPUT_DIR}/{BRANCH}-result-all.json`，然后从此文件读取已排序、去重、分配ID的问题列表。
