@@ -453,114 +453,109 @@ fi
 
 ## Phase 3：汇总结果
 
-### 3.1 读取所有待合并结果文件
+### 3.1 执行全局去重脚本（关键步骤）
 
-根据主计划中的待合并列表，读取所有JSON结果文件（`*-result-{batch}-merged.json`）。
+> **⚠️ 必须在生成报告前执行此步骤**，否则会导致 KeyError。
 
-### 3.2 全局去重
+1. **使用 Bash 执行 Python 脚本**（见下方 Phase 3.2）
+2. 脚本会：
+   - 收集所有批次结果文件（`*-result-*-merged.json`）
+   - 统一字段名（`file`/`文件`/`path` → `文件`）
+   - 全局去重
+   - 按维度权重排序
+   - 分配 ISS-{序号} ID
+   - 生成 `{OUTPUT_DIR}/{BRANCH}-result-all.json`
 
-**Phase 2.5 仅做了批次内去重，Phase 3 需做全局去重**：
+### 3.2 全局去重 Python 脚本
 
-1. 将所有批次的 JSON 结果展开为统一的 `问题列表`
-2. **字段名标准化**：合并前统一将 `file` 字段重命名为 `文件`（不同 Agent 可能使用不同字段名），确保后续去重和报告生成的字段一致
-   - 遍历所有问题条目，将 `p["file"]` 映射到 `p["文件"]`（若同时存在两者，优先保留 `文件`）
-   - **若问题条目本身缺少 `文件` 字段，使用空字符串兜底**：`p["文件"] = p.get("文件") or p.get("file", "")`
-3. 按 `文件路径 + 行号 + 维度 + 问题类型` 全局去重（与 Phase 2.5 批次内去重 key 一致）
-4. 同一问题多个 Agent 发现时，保留 CRITICAL > WARNING > SUGGESTION
-5. 去重后的完整问题列表保留全部字段（文件 / 行号 / 维度 / 类型 / 描述 / 问题代码 / 宕机后果 / 严重程度 / 修复建议）
+**必须执行此脚本**：
 
-> **⚠️ 全局去重 Python 脚本（建议使用）**：
->
-> ```python
-> python3 << 'PYTHON_EOF'
-> import json
-> import os
-> import glob
->
-> OUTPUT_DIR = "{OUTPUT_DIR}"
-> BRANCH = "{BRANCH}"
->
-> # 收集所有批次结果文件
-> merged_files = glob.glob(f"{OUTPUT_DIR}/{BRANCH}-result-*-merged.json")
-> if not merged_files:
->     print(f"未找到合并结果文件: {OUTPUT_DIR}/{BRANCH}-result-*-merged.json")
->     exit(1)
->
-> all_issues = []
-> for f in merged_files:
->     with open(f, 'r', encoding='utf-8') as fp:
->         data = json.load(fp)
->         if "问题列表" in data:
->             all_issues.extend(data["问题列表"])
->         elif "issues" in data:
->             all_issues.extend(data["issues"])
->
-> print(f"收集到 {len(all_issues)} 个问题（去重前）")
->
-> # 字段名标准化：file -> 文件
-> for p in all_issues:
->     if "文件" not in p or p["文件"] is None:
->         p["文件"] = p.get("file", "")
->
-> # 全局去重 key
-> seen = set()
-> deduped = []
-> for p in all_issues:
->     key = (p.get("文件", ""), p.get("行号", ""), p.get("维度", ""), p.get("类型", ""))
->     if key not in seen:
->         seen.add(key)
->         deduped.append(p)
->
-> print(f"去重后 {len(deduped)} 个问题")
->
-> # 按维度权重和严重程度排序
-> DIM_ORDER = {"G": 0, "F": 1, "E": 2, "B": 3, "A": 4, "C": 5, "D": 6}
-> SEV_ORDER = {"CRITICAL": 0, "WARNING": 1, "SUGGESTION": 2}
->
-> def sort_key(p):
->     dim = p.get("维度", "")
->     dim_key = 7
->     for k, v in DIM_ORDER.items():
->         if k in dim:
->             dim_key = v
->             break
->     sev = p.get("严重程度", "WARNING")
->     return (dim_key, SEV_ORDER.get(sev, 1), p.get("文件", ""))
->
-> deduped.sort(key=sort_key)
->
-> # 全局ID分配
-> for i, p in enumerate(deduped, 1):
->     p["id"] = f"ISS-{i:03d}"
->
-> # 保存结果
-> result_file = f"{OUTPUT_DIR}/{BRANCH}-result-all.json"
-> with open(result_file, 'w', encoding='utf-8') as fp:
->     json.dump(deduped, fp, ensure_ascii=False, indent=2)
->
-> print(f"结果已保存到: {result_file}")
-> print(f"总问题数: {len(deduped)}")
->
-> # 统计
-> from collections import Counter
-> sev_count = Counter(p.get("严重程度", "WARNING") for p in deduped)
-> print(f"CRITICAL: {sev_count.get('CRITICAL', 0)}")
-> print(f"WARNING: {sev_count.get('WARNING', 0)}")
-> print(f"SUGGESTION: {sev_count.get('SUGGESTION', 0)}")
-> PYTHON_EOF
-> ```
->
-> **⚠️ 必须执行此脚本进行全局去重和ID分配**。脚本会自动处理：
-> - 字段名标准化（处理 Agent 使用 `file` 或 `文件` 的不一致问题）
-> - 空值兜底（缺失字段用空字符串）
-> - 全局去重
-> - ID 分配
+```bash
+cd {OUTPUT_DIR}
+python3 << 'PYTHON_EOF'
+import json
+import glob
+from collections import Counter
+
+BRANCH = "{BRANCH}"
+
+# 收集所有批次结果文件
+merged_files = glob.glob(f"{BRANCH}-result-*-merged.json")
+if not merged_files:
+    print(f"未找到: {BRANCH}-result-*-merged.json")
+    exit(1)
+
+all_issues = []
+for f in merged_files:
+    with open(f, 'r', encoding='utf-8') as fp:
+        data = json.load(fp)
+        if isinstance(data, list):
+            all_issues.extend(data)
+        else:
+            all_issues.extend(data.get("问题列表", data.get("issues", [])))
+
+print(f"收集问题: {len(all_issues)} 个")
+
+# 字段名标准化
+for p in all_issues:
+    p["文件"] = p.get("文件") or p.get("file") or p.get("path") or ""
+    p["行号"] = str(p.get("行号") or p.get("line") or "")
+    p["维度"] = p.get("维度") or p.get("dimension") or ""
+    p["类型"] = p.get("类型") or p.get("type") or ""
+    p["严重程度"] = p.get("严重程度") or p.get("severity") or "WARNING"
+
+# 全局去重
+seen = set()
+deduped = []
+for p in all_issues:
+    key = (p["文件"], p["行号"], p["维度"], p["类型"])
+    if key not in seen:
+        seen.add(key)
+        deduped.append(p)
+
+print(f"去重后: {len(deduped)} 个")
+
+# 排序
+DIM_ORDER = {"G": 0, "F": 1, "E": 2, "B": 3, "A": 4, "C": 5, "D": 6}
+SEV_ORDER = {"CRITICAL": 0, "WARNING": 1, "SUGGESTION": 2}
+deduped.sort(key=lambda p: (
+    next((v for k, v in DIM_ORDER.items() if k in p.get("维度", "")), 7),
+    SEV_ORDER.get(p.get("严重程度", "WARNING"), 1),
+    p.get("文件", "")
+))
+
+# 分配ID
+for i, p in enumerate(deduped, 1):
+    p["id"] = f"ISS-{i:03d}"
+
+# 保存
+with open(f"{BRANCH}-result-all.json", 'w', encoding='utf-8') as fp:
+    json.dump(deduped, fp, ensure_ascii=False, indent=2)
+
+print(f"保存到: {BRANCH}-result-all.json")
+
+# 统计
+sev = Counter(p.get("严重程度") for p in deduped)
+print(f"总问题数: {len(deduped)}")
+print(f"CRITICAL: {sev.get('CRITICAL', 0)}")
+print(f"WARNING: {sev.get('WARNING', 0)}")
+print(f"SUGGESTION: {sev.get('SUGGESTION', 0)}")
+PYTHON_EOF
+```
+
+### 3.3 读取结果并生成报告
+
+1. 读取 `{OUTPUT_DIR}/{BRANCH}-result-all.json`
+2. 按维度分组问题
+3. 生成 Markdown 报告
 
 ### 3.3 生成最终报告
 
+> **⚠️ 前置步骤**：必须先执行 Phase 3.2 的 Python 脚本生成 `{OUTPUT_DIR}/{BRANCH}-result-all.json`，然后从此文件读取已排序、去重、分配ID的问题列表。
+
 使用 Write 工具创建 `{OUTPUT_DIR}/<branch-name>.md`
 
-报告按以下十一个部分组织，**每个审计维度独立一章**，章内先按严重程度排序，再按文件分组。同一文件的问题归入同一个文件节点下。全部问题必须经过全局去重后填入。
+报告按以下十一个部分组织，**每个审计维度独立一章**，章内先按严重程度排序，再按文件分组。同一文件的问题归入同一个文件节点下。全部问题必须从 `{OUTPUT_DIR}/{BRANCH}-result-all.json` 读取。
 
 > **⚠️ 问题编号规则**：全局去重后，按维度权重从高到低（G→F→E→B→A→C→D）、同维度内按严重程度（CRITICAL→WARNING→SUGGESTION）、同严重程度内按文件路径排序，为每个问题分配唯一ID：`ISS-{3位序号}`（如 ISS-001, ISS-002）。此ID用于下游 review-bug-fix 追踪，必须在报告表格和JSON中一致出现。
 
