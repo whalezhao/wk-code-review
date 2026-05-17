@@ -574,6 +574,16 @@ PYTHON_EOF
 
 > **⚠️ 前置步骤**：必须先执行 Phase 3.2 的 Python 脚本生成 `{OUTPUT_DIR}/{BRANCH}-result-all.json`，然后从此文件读取已排序、去重、分配ID的问题列表。
 
+> **⚠️ 强制要求：JSON 中的所有数据必须完整写入 .md 报告，不得遗漏任何一个问题。**
+>
+> `result-all.json` 是中间产物，在 Phase 3.5 会被清理删除。`.md` 报告是唯一最终产物，也是下游 `review-bug-fix` Skill 的唯一数据源。如果 JSON 中有问题没有写入 .md，该问题将永久丢失，无法恢复。
+>
+> 具体要求：
+> - `问题列表` 中的每一条问题，都必须出现在 .md 报告对应维度章节的表格中
+> - `文件清单` 中的每一个文件，都必须出现在 .md 报告的"涉及文件清单"表格中
+> - 如果 Write 工具因内容过长无法一次性写入，必须分多次写入，直到全部问题写完
+> - 写完后执行 Phase 3.4 校验，确认 .md 中的 ISS 编号数量与 JSON 问题数完全一致
+
 使用 Write 工具创建 `{OUTPUT_DIR}/<branch-name>.md`
 
 报告按以下十一个部分组织，**每个审计维度独立一章**，章内先按严重程度排序，再按文件分组。同一文件的问题归入同一个文件节点下。全部问题必须从 `{OUTPUT_DIR}/{BRANCH}-result-all.json` 读取。
@@ -606,12 +616,11 @@ PYTHON_EOF
 
 **涉及文件清单**（出现问题的所有文件，去重，按问题数降序）：
 
-> ⚠️ **强制要求**：此表格必须从 `{BRANCH}-result-all.json` 的 `文件清单` 字段读取并填充真实数据，不得遗漏，不得使用占位符。所有出现问题的文件都必须列出，不能截断。
+> ⚠️ **强制要求**：此表格必须列出所有出现问题的文件，不得遗漏，不得截断。从 `{BRANCH}-result-all.json` 的 `文件清单` 字段读取数据后填入。
 
 生成步骤：
-1. 读取 `{OUTPUT_DIR}/{BRANCH}-result-all.json`
-2. 找到顶层字段 `文件清单`（数组类型），包含所有出现问题文件的完整列表
-3. 按以下格式生成表格，每行对应数组中的一个元素：
+1. 读取 `{OUTPUT_DIR}/{BRANCH}-result-all.json` 的 `文件清单` 字段
+2. 按以下格式生成表格，每行对应一个文件：
    - 第一列：文件路径（使用反引号包裹，便于复制）
    - 第二列：问题数
    - 第三列：该文件所有问题中的最高严重程度
@@ -623,7 +632,7 @@ PYTHON_EOF
 | `cn/cisdigital/datakits/di/task/biz/repository/mapper/TaskMapper.xml` | 3 | CRITICAL |
 | ... | ... | ... |
 
-若 `文件清单` 字段为空，报告生成失败，必须修复 Phase 3.2 的 Python 脚本。
+若 `文件清单` 字段为空，报告生成失败，必须修复 Phase 3.2 的 Python 脚本。此表格填写完成后，`result-all.json` 的使命已完成，将在 Phase 3.5 清理中删除。
 
 ---
 
@@ -1034,10 +1043,11 @@ PYTHON_EOF
 AUDIT_DIR="{OUTPUT_DIR}"
 BRANCH_NAME="${BRANCH}"
 
-# 1. 清理 OUTPUT_DIR 内的批次结果文件（保留 result-all.json）
+# 1. 清理 OUTPUT_DIR 内的所有中间文件
 echo "清理 OUTPUT_DIR: ${AUDIT_DIR}"
 rm -f "${AUDIT_DIR}/${BRANCH_NAME}-result-"*-merged.json
 rm -f "${AUDIT_DIR}/${BRANCH_NAME}-result-"*-checkpoint-*.json
+rm -f "${AUDIT_DIR}/${BRANCH_NAME}-result-all.json"
 rm -f "${AUDIT_DIR}/${BRANCH_NAME}-status.json"
 
 # 2. 清理主计划文件（与最终报告同目录，需显式删除）
@@ -1056,25 +1066,16 @@ if [ -d "./references" ]; then
   fi
 fi
 
-# 5. 验证 result-all.json 完整性
-TOTAL_IN_JSON=$(python3 -c "import json; d=json.load(open('${AUDIT_DIR}/${BRANCH_NAME}-result-all.json')); print(len(d.get('问题列表', [])))")
-echo "result-all.json 问题数: ${TOTAL_IN_JSON}"
-if [ "${TOTAL_IN_JSON}" -eq "0" ]; then
-  echo "⚠️ 警告: result-all.json 问题列表为空，请检查！"
-fi
-
 echo "清理完成"
 ```
 
-> **⚠️ `result-all.json` 保留说明**：
-> - `{BRANCH}-result-all.json` 是结构化的完整审计数据，包含所有问题（`问题列表`）和文件清单（`文件清单`）
-> - 下游 `review-bug-fix` Skill 可直接读取此文件，无需解析 Markdown 报告
-> - 清理步骤中**只删除批次中间文件**（`*-result-*-merged.json`），**保留 `result-all.json`**
+> **清理说明**：
+> - `result-all.json` 是汇总阶段的中间产物（用于去重、排序、分配ID），报告生成后已无用，一并清理
+> - `.md` 报告是唯一产物，包含全部问题和文件清单，下游 Skill 直接读取 `.md` 即可
 
 清理后保留的文件：
 ```
-{OUTPUT_DIR}/{branch-name}.md              # ✅ 最终审计报告
-{OUTPUT_DIR}/{branch-name}-result-all.json # ✅ 结构化审计数据（全部问题 + 文件清单）
+{OUTPUT_DIR}/{branch-name}.md       # ✅ 最终审计报告（唯一产物）
 ```
 
 ---
@@ -1112,8 +1113,8 @@ echo "清理完成"
 - [ ] **全局去重已完成**（批次间无重复问题）
 - [ ] **全局问题ID已分配**（`ISS-{序号}`，按维度权重从高到低排序）
 - [ ] **涉及文件清单已生成**（从 `{BRANCH}-result-all.json` 的 `文件清单` 字段读取，所有出现问题文件完整列出，表格完整无占位符）
+- [ ] **JSON 全部数据已写入 .md 报告**（`result-all.json` 中的每一条问题和每一个文件都已写入 .md，无遗漏。.md 是唯一最终产物，JSON 清理后不可恢复）
 - [ ] **报告完整性校验已通过**（问题数、文件数、维度覆盖、ID连续性，Phase 3.4）
-- [ ] **`result-all.json` 已保留**（清理步骤未删除此文件，供下游 Skill 使用）
 - [ ] 最终报告已写入 `{OUTPUT_DIR}/<branch-name>.md`
 - [ ] 报告按**维度分章节**（3.3.2~3.3.8），各章节内按文件分组，维度内按 CRITICAL→WARNING→SUGGESTION 排序
 - [ ] 报告各维度表格包含 **ID 列**（大部分6列：ID/行号/子类型/描述/问题代码/修复建议；F维度7列额外含宕机后果）
