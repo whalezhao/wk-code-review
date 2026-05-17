@@ -227,11 +227,17 @@ git diff --name-only ${BASE_BRANCH}...${BRANCH:-$CURRENT_BRANCH} 2>/dev/null | g
 ```bash
 # 检查是否存在进行中的审计状态文件
 STATUS_FILE="{OUTPUT_DIR}/${BRANCH}-status.json"
+PLAN_FILE="{OUTPUT_DIR}/${BRANCH}-plan.md"
 RESULT_FILES=$(ls {OUTPUT_DIR}/${BRANCH}-result-*.json 2>/dev/null)
 
+# 优先检查 status.json（最可靠的进度来源）
 if [ -f "$STATUS_FILE" ]; then
   echo "发现历史审计状态文件"
   cat "$STATUS_FILE"
+  # 解析 completed_batches 和 pending_batches 确定断点
+elif [ -f "$PLAN_FILE" ]; then
+  echo "未找到 status.json，但发现主计划文件，视为完全中断"
+  # 无 status.json 但有 plan.md，从 Phase 1.5 恢复
 fi
 
 if [ -n "$RESULT_FILES" ]; then
@@ -247,8 +253,9 @@ fi
    - Auto Mode：自动从 Phase 1.5 继续，从第一个未完成的批次开始
 
 2. **部分完成**：某些 batch 已完成，但不是全部
-   - 跳过已完成的批次
-   - 从第一个未完成的批次继续执行
+   - 读取 status.json 的 `completed_batches` 和 `pending_batches` 数组
+   - 跳过 `completed_batches` 中的批次
+   - 从 `pending_batches` 的第一个批次继续执行
 
 3. **新审计**：无任何历史审计文件
    - 正常开始新的审计流程
@@ -328,6 +335,7 @@ fi
    - Agent 应在执行过程中每处理 5 个文件后保存一次中间结果
    - 如果 Agent 崩溃，下次恢复时应检查中间结果并从断点继续
    - 使用结果文件命名约定：`result-<batch>-<agent-id>-checkpoint-{n}.json`
+   - **检查点恢复逻辑**：重启 Agent 时，检查是否存在 `result-<batch>-<agent-id>-checkpoint-*.json`，找到最大序号的检查点，读取已完成文件列表，跳过这些文件，从下一个文件开始审计。审计完成后合并所有检查点结果。
 
 #### 2.4 监控进度
 
@@ -380,7 +388,7 @@ fi
    - 写入 `{OUTPUT_DIR}/${BRANCH}-result-${BATCH_ID}-merged.json`
    - 写入后必须再次执行 `python3` JSON 校验，确认合并结果文件合法
 
-4. **更新进度检查点**
+4. **立即更新进度检查点**（必须在合并文件写入后立即执行，顺序不可颠倒）
    ```json
    {
      "...": "...",
@@ -389,6 +397,7 @@ fi
      "last_completed_at": "{timestamp}"
    }
    ```
+   > **⚠️ 顺序保证**：步骤 3（合并文件写入）和步骤 4（status 更新）必须是原子操作。若 status 更新失败，下次恢复时步骤 2.1 会检测到 merged.json 已存在并跳过，status.json 的 `pending_batches` 不准确但无害。
 
 > **⚠️ 注意**：跨批次的全局去重统一在 Phase 3 执行，此处仅处理批次内和批次间去重。
 
